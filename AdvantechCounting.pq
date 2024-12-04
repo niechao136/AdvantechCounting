@@ -28,7 +28,8 @@ FunctionTable = () as table =>
         objects = #table(
             { "Name", "Key", "Data", "ItemKind", "ItemName", "IsLeaf" },
             {
-                { "GetSite", "GetSite", AdvantechCounting.GetSite, "Function", "GetSite", true }
+                { "GetSite", "GetSite", AdvantechCounting.GetSite, "Function", "GetSite", true },
+                { "GetData", "GetData", AdvantechCounting.GetData, "Function", "GetData", true }
             }
         ),
         navTable = Table.ForceToNavigationTable(objects, {"Key"}, "Name", "Data", "ItemKind", "ItemName", "IsLeaf")
@@ -56,7 +57,7 @@ AdvantechCounting.GetSite = Value.ReplaceType(GetSite, GetSiteType);
     in
         show;
 
-AdvantechCounting.GetData = Value.ReplaceType(GetSite, GetSiteType);
+AdvantechCounting.GetData = Value.ReplaceType(GetData, GetDataType);
     GetDataType = type function (
         store_id as ( type text meta [
             Documentation.FieldCaption = "Site ID",
@@ -81,14 +82,32 @@ AdvantechCounting.GetData = Value.ReplaceType(GetSite, GetSiteType);
     ];
 
     GetData = (store_id as text, start_date as date, end_date as date, data_unit as text) => 
-    let
-        PostContent = Json.FromValue([ store_id = store_id, access_key = access_key ]),
-        res = Json.Document(Web.Contents(api_uri & "/api/store/info", [ Headers = form_header, Content = PostContent])),
-        site = res[store] ?? [],
-        
-        show = Table.SelectColumns(Table.FromRecords(site), { "store_id", "store_name", "country", "province", "city" })
-    in
-        show;
+    if start_date >= end_date
+    then
+        let error_message = "End Date can\'t be ealier than Start Date" in error_message
+    else 
+        let
+            PostContent = Json.FromValue([ store_id = store_id, access_key = access_key ]),
+            res = Json.Document(Web.Contents(api_uri & "/api/store/info", [ Headers = form_header, Content = PostContent])),
+            site = res[store] ?? [],
+            sensor = List.Select(site[sensors] ?? {}, (o) => Text.Lower(o[device_type] ?? "") = "v-pos" and (o[sensor_id] ?? "") <> ""),
+            sensor_ids = List.Transform(sensor, (o) => o[sensor_id] ?? ""),
+            unit = if data_unit = "Day" then "dd" else "hh",
+            pos = if List.IsEmpty(sensor_ids) then [
+                account_id = site[acc_id],
+                rks = { site[register_key] }, 
+                period = { start_date, end_date },
+                unit = unit
+            ] else [
+                account_id = site[acc_id],
+                rks = { site[register_key] }, 
+                period = { start_date, end_date },
+                unit = unit,
+                sensor_ids = sensor_ids
+            ],
+            show = Table.SelectColumns(Table.FromRecords(site), { "store_id", "store_name", "country", "province", "city" })
+        in
+            show;
 
 // Data Source Kind description
 AdvantechCounting = [
