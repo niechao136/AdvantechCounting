@@ -64,50 +64,106 @@ AdvantechCounting.GetData = Value.ReplaceType(GetData, GetDataType);
             Documentation.FieldDescription = "Site ID",
             Documentation.SampleValues = {"Site ID"}
         ]),
-        start_date as (type date meta [
-            Documentation.FieldCaption = "Start Date",
-            Documentation.FieldDescription = "Start Date"
+        date_value as (type date meta [
+            Documentation.FieldCaption = "Date",
+            Documentation.FieldDescription = "Date"
         ]),
-        end_date as (type date meta [
-            Documentation.FieldCaption = "End Date",
-            Documentation.FieldDescription = "End Date"
-        ]),
-        data_unit as ( type text meta [
-            Documentation.FieldCaption = "Data Unit",
-            Documentation.FieldDescription = "Data Unit",
-            Documentation.AllowedValues = {"Day", "Hour"}
+        data_range as ( type text meta [
+            Documentation.FieldCaption = "Data Range",
+            Documentation.FieldDescription = "Data Range",
+            Documentation.AllowedValues = {"Day", "Week", "Month", "Year"}
         ])
     ) as table meta [
         Documentation.Name = "GetData"
     ];
 
-    GetData = (store_id as text, start_date as date, end_date as date, data_unit as text) => 
-    if start_date >= end_date
-    then
-        let error_message = "End Date can\'t be ealier than Start Date" in error_message
-    else 
-        let
-            PostContent = Json.FromValue([ store_id = store_id, access_key = access_key ]),
-            res = Json.Document(Web.Contents(api_uri & "/api/store/info", [ Headers = form_header, Content = PostContent])),
-            site = res[store] ?? [],
-            sensor = List.Select(site[sensors] ?? {}, (o) => Text.Lower(o[device_type] ?? "") = "v-pos" and (o[sensor_id] ?? "") <> ""),
-            sensor_ids = List.Transform(sensor, (o) => o[sensor_id] ?? ""),
-            unit = if data_unit = "Day" then "dd" else "hh",
-            pos = if List.IsEmpty(sensor_ids) then [
-                account_id = site[acc_id],
-                rks = { site[register_key] }, 
-                period = { start_date, end_date },
-                unit = unit
-            ] else [
-                account_id = site[acc_id],
-                rks = { site[register_key] }, 
-                period = { start_date, end_date },
-                unit = unit,
-                sensor_ids = sensor_ids
-            ],
-            show = Table.SelectColumns(Table.FromRecords(site), { "store_id", "store_name", "country", "province", "city" })
-        in
-            show;
+    GetData = (store_id as text, date_value as date, data_range as text) => 
+    let
+        PostContent = Json.FromValue([ store_id = store_id, access_key = access_key ]),
+        res = Json.Document(Web.Contents(api_uri & "/api/store/info", [ Headers = form_header, Content = PostContent])),
+        site = res[store] ?? [],
+        // sensor = List.Select(site[sensors] ?? {}, (o) => Text.Lower(o[device_type] ?? "") = "v-pos" and (o[sensor_id] ?? "") <> ""),
+        // sensor_ids = List.Transform(sensor, (o) => o[sensor_id] ?? ""),
+        // unit = if data_unit = "Day" then "dd" else "hh",
+        // pos = if List.IsEmpty(sensor_ids) then [
+        //     account_id = site[acc_id],
+        //     rks = { site[register_key] }, 
+        //     period = { start_date, end_date },
+        //     unit = unit
+        // ] else [
+        //     account_id = site[acc_id],
+        //     rks = { site[register_key] }, 
+        //     period = { start_date, end_date },
+        //     unit = unit,
+        //     sensor_ids = sensor_ids
+        // ],
+        range = if data_range = "Day" then "dd" else
+        (if data_range = "Week" then "ww" else
+        (if data_range = "Month" then "mm" else "yyyy")),
+        unit = if data_range = "Day" then "hh" else
+        (if data_range = "Year" then "mm" else "dd"),
+        data_source = [
+            analytic = {
+                [ caption = "", method = "convert_rate", preprocess_data = { "pin", "crosscnt" } ]
+            },
+            data_range = range,
+            data_unit = unit,
+            date = {date_value},
+            date_display = "specific",
+            date_end = "",
+            folding_unit = "",
+            is_aggregate = false,
+            row_type = "chart",
+            source = {
+                [
+                    caption = "",
+                    chart_type = {"line"},
+                    merge_type = "sum",
+                    monitor_type = "ppc_store_entry",
+                    preprocess_data = {"pin"},
+                    sources = {
+                        [
+                            target_id = store_id
+                        ]
+                    }
+                ],
+                [
+                    caption = "",
+                    chart_type = {"line"},
+                    merge_type = "sum",
+                    monitor_type = "ppc_store_outside",
+                    preprocess_data = {"crosscnt"},
+                    sources = {
+                        [
+                            target_id = store_id
+                        ]
+                    }
+                ]
+            },
+            tags = {},
+            time_compare = ""
+        ],
+        widget_content = [
+           data_source = data_source,
+           module_id = 0,
+           access_key = access_key
+        ],
+        widget = Json.Document(Web.Contents(api_uri & "/api/widget/data", [ Headers = form_header, Content = Json.FromValue(widget_content)])),
+        label = widget[label] ?? {},
+        pin = widget[retrived]{0}[data]{0}[pin][row] ?? {},
+        crosscnt = widget[retrived]{1}[data]{0}[crosscnt][row] ?? {},
+        rate = widget[analytic]{0}[data]{0}[pin][row] ?? {},
+        num = {0..(List.Count(label) - 1)},
+        data = List.Transform(num, (key) => [
+            Label = label{key},
+            Traffic = pin{key},
+            #"Outside Traffic" = if crosscnt{key} = -99999 then null else crosscnt{key},
+            #"Turn in Rate" = if rate{key} = -99999 then null else rate{key}
+        ]),
+        show = Table.FromRecords(data)
+    in
+        show;
+        
 
 // Data Source Kind description
 AdvantechCounting = [
